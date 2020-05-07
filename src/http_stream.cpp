@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <memory>
 #include <mutex>
+#include <thread>
+#include <atomic>
 #include <ctime>
 using std::cerr;
 using std::endl;
@@ -258,10 +260,11 @@ public:
                 //_write(s, head, 0);
                 if (!close_all_sockets) _write(s, ", \n", 0);
                 int n = _write(s, outputbuf, outlen);
-                if (n < outlen)
+                if (n < (int)outlen)
                 {
                     cerr << "JSON_sender: kill client " << s << endl;
-                    ::shutdown(s, 2);
+                    close_socket(s);
+                    //::shutdown(s, 2);
                     FD_CLR(s, &master);
                 }
 
@@ -448,7 +451,7 @@ public:
         cv::imencode(".jpg", frame, outbuf, params);  //REMOVED FOR COMPATIBILITY
         // https://docs.opencv.org/3.4/d4/da8/group__imgcodecs.html#ga292d81be8d76901bff7988d18d2b42ac
         //std::cerr << "cv::imencode call disabled!" << std::endl;
-        size_t outlen = outbuf.size();
+        int outlen = static_cast<int>(outbuf.size());
 
 #ifdef _WIN32
         for (unsigned i = 0; i<rread.fd_count; i++)
@@ -504,11 +507,12 @@ public:
                 sprintf(head, "--mjpegstream\r\nContent-Type: image/jpeg\r\nContent-Length: %zu\r\n\r\n", outlen);
                 _write(s, head, 0);
                 int n = _write(s, (char*)(&outbuf[0]), outlen);
-                //cerr << "known client " << s << " " << n << endl;
-                if (n < outlen)
+                cerr << "known client: " << s << ", sent = " << n << ", must be sent outlen = " << outlen << endl;
+                if (n < (int)outlen)
                 {
                     cerr << "MJPG_sender: kill client " << s << endl;
-                    ::shutdown(s, 2);
+                    //::shutdown(s, 2);
+                    close_socket(s);
                     FD_CLR(s, &master);
                 }
             }
@@ -544,6 +548,8 @@ void send_mjpeg(mat_cv* mat, int port, int timeout, int quality)
 std::string get_system_frame_time_string()
 {
     std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    static std::mutex mtx;
+    std::lock_guard<std::mutex> lock(mtx);
     struct tm *tmp_buf = localtime(&t);
     char buff[256];
     std::strftime(buff, 256, "%A %F %T", tmp_buf);
@@ -554,7 +560,7 @@ std::string get_system_frame_time_string()
 
 
 #ifdef __CYGWIN__
-int send_http_post_request(char *http_post_host, int server_port, char *videosource,
+int send_http_post_request(char *http_post_host, int server_port, const char *videosource,
     detection *dets, int nboxes, int classes, char **names, long long int frame_id, int ext_output, int timeout)
 {
     std::cerr << " send_http_post_request() isn't implemented \n";
@@ -576,7 +582,7 @@ int send_http_post_request(char *http_post_host, int server_port, char *videosou
 // https://webhook.site/
 // https://github.com/yhirose/cpp-httplib
 // sent POST http request
-int send_http_post_request(char *http_post_host, int server_port, char *videosource,
+int send_http_post_request(char *http_post_host, int server_port, const char *videosource,
     detection *dets, int nboxes, int classes, char **names, long long int frame_id, int ext_output, int timeout)
 {
     const float thresh = 0.005; // function get_network_boxes() has already filtred dets by actual threshold
@@ -676,6 +682,59 @@ void stop_timer_and_show_name(char *name) {
 
 void show_total_time() {
     std::cout << " Total: " << total_time * 1000 << " msec" << std::endl;
+}
+
+
+int custom_create_thread(custom_thread_t * tid, const custom_attr_t * attr, void *(*func) (void *), void *arg)
+{
+    std::thread *ptr = new std::thread(func, arg);
+    *tid = (custom_thread_t *)ptr;
+    if (tid) return 0;
+    else return -1;
+}
+
+int custom_join(custom_thread_t tid, void **value_ptr)
+{
+    std::thread *ptr = (std::thread *)tid;
+    if (ptr) {
+        ptr->join();
+        delete ptr;
+        return 0;
+    }
+    else printf(" Error: ptr of thread is NULL in custom_join() \n");
+
+    return -1;
+}
+
+int custom_atomic_load_int(volatile int* obj)
+{
+    const volatile std::atomic<int>* ptr_a = (const volatile std::atomic<int>*)obj;
+    return std::atomic_load(ptr_a);
+}
+
+void custom_atomic_store_int(volatile int* obj, int desr)
+{
+    volatile std::atomic<int>* ptr_a = (volatile std::atomic<int>*)obj;
+    std::atomic_store(ptr_a, desr);
+}
+
+#if !defined(__MINGW64__)
+void this_thread_sleep_for(int ms_time)
+{
+    std::chrono::milliseconds dura(ms_time);
+    std::this_thread::sleep_for(dura);
+}
+#else
+void this_thread_sleep_for(int ms_time)
+{
+    std::cerr << " this_thread_sleep_for() isn't implemented \n";
+    return;
+}
+#endif
+
+void this_thread_yield()
+{
+    std::this_thread::yield();
 }
 
 #else // C++11
